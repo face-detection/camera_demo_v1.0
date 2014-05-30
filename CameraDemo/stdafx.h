@@ -41,11 +41,18 @@
 /************************************************************************/
 /*  opencv support                                                      */
 /************************************************************************/
-#include "opencv/cv.h"
-#include "opencv/highgui.h"
+#include "cv.h"
+#include "highgui.h"
 #include "CvvImage.h"
-#include "opencv2/objdetect/objdetect.hpp"
-using namespace cv;
+#include "objdetect/objdetect.hpp"
+
+using std::vector;
+using cv::VideoCapture;
+using cv::Mat;
+using cv::CascadeClassifier;
+using cv::Rect;
+using cv::Size;
+using cv::Scalar;
 
 
 

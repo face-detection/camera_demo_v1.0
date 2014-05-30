@@ -12,11 +12,20 @@
 #define new DEBUG_NEW
 #endif
 
+// control if enable face detection...
 #define DETECT_ENABLE		1
-static CascadeClassifier FaceFrontalCascade;
-static CascadeClassifier FaceProfileCascade;
-static Mat ImageFace[FRAME_MAX];
-static int ImageFaceNumber = 0;
+
+// xml file:
+static const TCHAR* FRONTAL_FACE_XML_FILE = _T("./xml/haarcascade_frontalface_default.xml");
+static const TCHAR* PROFILE_FACE_XML_FILE = _T("./xml/haarcascade_profileface.xml");
+
+// detect parameters:
+#define SCALE_FACTOR		(1.1)
+#define MIN_NEIGHBOR		3
+#define MIN_FACE_WIDTH		100
+#define MIN_FACE_HEIGHT		100
+#define MAX_FACE_WIDTH		2000
+#define MAX_FACE_HEIGHT		2000
 
 // 用于应用程序“关于”菜单项的 CAboutDlg 对话框
 
@@ -25,13 +34,13 @@ class CAboutDlg : public CDialogEx
 public:
 	CAboutDlg();
 
-// 对话框数据
+	// 对话框数据
 	enum { IDD = IDD_ABOUTBOX };
 
-	protected:
+protected:
 	virtual void DoDataExchange(CDataExchange* pDX);    // DDX/DDV 支持
 
-// 实现
+	// 实现
 protected:
 	DECLARE_MESSAGE_MAP()
 };
@@ -55,7 +64,7 @@ END_MESSAGE_MAP()
 
 
 CCameraDemoDlg::CCameraDemoDlg(CWnd* pParent /*=NULL*/)
-	: CDialogEx(CCameraDemoDlg::IDD, pParent)
+: CDialogEx(CCameraDemoDlg::IDD, pParent)
 {
 	m_hIcon = AfxGetApp()->LoadIcon(IDR_MAINFRAME);
 }
@@ -111,7 +120,7 @@ BOOL CCameraDemoDlg::OnInitDialog()
 	SetIcon(m_hIcon, FALSE);		// 设置小图标
 
 	// TODO: 在此添加额外的初始化代码
-	SetWindowText(_T("CameraDemo - v1.1"));
+	SetWindowText(_T("CameraDemo - v1.2"));
 	Init();
 	return TRUE;  // 除非将焦点设置到控件，否则返回 TRUE
 }
@@ -155,7 +164,7 @@ void CCameraDemoDlg::OnPaint()
 	else
 	{
 		// re-draw captured frame:
-		for(int i=0; i<FRAME_MAX; ++i)
+		for (int i = 0; i < FRAME_MAX; ++i)
 			m_Frames[i].m_CvvImage.DrawToHDC(m_Frames[i].m_hVideoDC, &m_Frames[i].m_VideoRect);
 		CDialogEx::OnPaint();
 	}
@@ -173,28 +182,22 @@ void CCameraDemoDlg::Init()
 	// init parameters:
 	m_bSaveVideo = FALSE;
 	m_bCamera = TRUE;
-	m_pCapture = NULL;
 	m_pVideoWriter = NULL;
 	m_nTimer = 0;
-	CWnd *pWnd;
-	pWnd = GetDlgItem(IDC_VIDEO);
-	m_pVideoDC = pWnd->GetDC();
-	m_hVideoDC = m_pVideoDC->GetSafeHdc();
+	CWnd *pWnd = GetDlgItem(IDC_VIDEO);
+	CDC *pVideoDC = pWnd->GetDC();
+	m_hVideoDC = pVideoDC->GetSafeHdc();
 	pWnd->GetClientRect(&m_VideoRect);
 
 	// capture region:
 	m_nFrameIndex = 0;
-	for(int i=0; i<FRAME_MAX; ++i)
+	for (int i = 0; i < FRAME_MAX; ++i)
 	{
 		pWnd = GetDlgItem(IDC_CAP0 + i);
-		m_Frames[i].m_pVideoDC = pWnd->GetDC();
-		m_Frames[i].m_hVideoDC = m_Frames[i].m_pVideoDC->GetSafeHdc();
+		pVideoDC = pWnd->GetDC();
+		m_Frames[i].m_hVideoDC = pVideoDC->GetSafeHdc();
 		pWnd->GetClientRect(&m_Frames[i].m_VideoRect);
 	}
-
-	// load cascade:
-	FaceFrontalCascade.load("xml\\lbpcascade_frontalface.xml");
-	//m_FaceProfileCascade.load("xml\\lbpcascade_profileface.xml");
 
 	// configure:
 	GetDlgItem(IDC_BUTTON_CAPTURE)->EnableWindow(FALSE);
@@ -203,10 +206,26 @@ void CCameraDemoDlg::Init()
 	((CButton*)GetDlgItem(IDC_CHECK_SAVE))->SetCheck(BST_UNCHECKED);
 
 	// open camera:
-	m_pCapture = cvCaptureFromCAM(0);
-	if(!m_pCapture)
+	m_VideoCap.open(0);
+	if (!m_VideoCap.isOpened())
 	{
-		MessageBox(_T("can not open camera!"));
+		MessageBox(_T("Error: can not open camera!"));
+		return;
+	}
+
+	// load cascade:
+	m_ImageFaceNumber = 0;
+	USES_CONVERSION;
+	m_FaceFrontalCascade.load(W2A(FRONTAL_FACE_XML_FILE));
+	if (m_FaceFrontalCascade.empty())
+	{
+		MessageBox(_T("Error: can not load \"%s\""), (FRONTAL_FACE_XML_FILE));
+		return;
+	}
+	m_FaceProfileCascade.load(W2A(PROFILE_FACE_XML_FILE));
+	if (m_FaceProfileCascade.empty())
+	{
+		MessageBox(_T("Error: can not load \"%s\""), PROFILE_FACE_XML_FILE);
 		return;
 	}
 }
@@ -214,52 +233,70 @@ void CCameraDemoDlg::Init()
 void CCameraDemoDlg::OnTimer(UINT_PTR nIDEvent)
 {
 	// TODO: 在此添加消息处理程序代码和/或调用默认值
-	if(m_pCapture)
+	if (m_nTimer == nIDEvent && m_VideoCap.isOpened())
 	{
-		IplImage *m_Frame;
-		m_Frame = cvQueryFrame(m_pCapture);
-		if(!m_Frame)
+		Mat MatFrame;
+		m_VideoCap >> MatFrame; // read frame
+		if (MatFrame.empty())
 		{
-			if(!m_bCamera)
+			if (!m_bCamera)
 			{
-				cvReleaseCapture(&m_pCapture);
+				// when playing file, we restart from beginning...
+				m_VideoCap.release();
 				USES_CONVERSION;
-				m_pCapture = cvCaptureFromAVI(W2A(m_cstrVideoPath));
+				m_VideoCap.open(W2A(m_cstrVideoPath));
 			}
 		}
 		else
-		{		
+		{
+#if (DETECT_ENABLE == 1)			
 			//detect face:
-#if (DETECT_ENABLE == 1)
-			Mat GrayFrame;
+			Mat GrayFrame, EqualizedFrame;
 			vector<Rect> Faces;
-			Mat equalizedImg;
-			Mat ReferenceFrame(m_Frame); 
-			cvtColor(ReferenceFrame, GrayFrame, COLOR_RGB2GRAY);
-			equalizeHist(GrayFrame, equalizedImg);
-			FaceFrontalCascade.detectMultiScale(equalizedImg, Faces); // using default parameters...
-			if(Faces.size())
+			cvtColor(MatFrame, GrayFrame, cv::COLOR_RGB2GRAY);
+			equalizeHist(GrayFrame, EqualizedFrame);
+			if (EqualizedFrame.empty())
+				return;
+			// Front face:
+			Faces.clear();
+			m_FaceFrontalCascade.detectMultiScale(EqualizedFrame, Faces, SCALE_FACTOR, MIN_NEIGHBOR, 0 | CV_HAAR_SCALE_IMAGE, Size(MIN_FACE_WIDTH, MIN_FACE_HEIGHT), Size(MAX_FACE_WIDTH, MAX_FACE_HEIGHT)); // using default parameters...
+			if (Faces.size())
 			{
 				for (size_t i = 0; i < Faces.size(); i++)
 				{
-					if(i < FRAME_MAX)
-						ImageFace[i] = ReferenceFrame(Rect(Faces[i].x, Faces[i].y, Faces[i].width, Faces[i].height));
-					rectangle(ReferenceFrame, Faces[i], Scalar(0,255,0), 2);
-				}	
-				ImageFaceNumber = Faces.size();
-				if(ImageFaceNumber > FRAME_MAX)
-					ImageFaceNumber = FRAME_MAX;
+					if (i < FRAME_MAX)
+						m_ImageFace[i] = MatFrame(Rect(Faces[i].x, Faces[i].y, Faces[i].width, Faces[i].height));
+					rectangle(MatFrame, Faces[i], Scalar(0, 255, 0), 2);
+				}
+				m_ImageFaceNumber = Faces.size();
+				if (m_ImageFaceNumber > FRAME_MAX)
+					m_ImageFaceNumber = FRAME_MAX;
 			}
-			
+			// profile face:
+			Faces.clear();
+			m_FaceProfileCascade.detectMultiScale(EqualizedFrame, Faces, SCALE_FACTOR, MIN_NEIGHBOR, 0 | CV_HAAR_SCALE_IMAGE, Size(MIN_FACE_WIDTH, MIN_FACE_HEIGHT), Size(MAX_FACE_WIDTH, MAX_FACE_HEIGHT)); // using default parameters...
+			if (Faces.size())
+			{
+				for (size_t i = 0; i < Faces.size(); i++)
+				{
+					if (i < FRAME_MAX)
+						m_ImageFace[i] = MatFrame(Rect(Faces[i].x, Faces[i].y, Faces[i].width, Faces[i].height));
+					rectangle(MatFrame, Faces[i], Scalar(255, 0, 0), 2);
+				}
+				m_ImageFaceNumber = Faces.size();
+				if (m_ImageFaceNumber > FRAME_MAX)
+					m_ImageFaceNumber = FRAME_MAX;
+			}
 #endif
 			//draw:
-			CvvImage m_CvvImage;
-			m_CvvImage.CopyOf(m_Frame, 1);
-			m_CvvImage.DrawToHDC(m_hVideoDC, &m_VideoRect);
+			IplImage IplFrame = MatFrame;
+			CvvImage CvvFrame;
+			CvvFrame.CopyOf(&IplFrame, 1);
+			CvvFrame.DrawToHDC(m_hVideoDC, &m_VideoRect);
 			//check if to be saved:
-			if(m_bSaveVideo)
+			if (m_bSaveVideo)
 			{
-				cvWriteFrame(m_pVideoWriter, m_Frame);
+				cvWriteFrame(m_pVideoWriter, &IplFrame);
 			}
 		}
 	}
@@ -272,39 +309,42 @@ void CCameraDemoDlg::OnBnClickedButtonPlay()
 	// TODO: 在此添加控件通知处理程序代码
 	CString cstr;
 	GetDlgItemText(IDC_BUTTON_PLAY, cstr);
-	if(!cstr.Compare(_T("START")))
+	if (!cstr.Compare(_T("START")))
 	{
-		if(!m_pCapture)
+		if (!m_VideoCap.isOpened())
 		{
-			if(((CButton*)GetDlgItem(IDC_RADIO_CAMERA))->GetCheck())
+			if (((CButton*)GetDlgItem(IDC_RADIO_CAMERA))->GetCheck())
 			{
-				m_pCapture = cvCaptureFromCAM(0);
-				if(!m_pCapture)
+				// open camera:
+				m_VideoCap.open(0);
+				if (!m_VideoCap.isOpened())
 				{
-					MessageBox(_T("can not open camera!"));
+					MessageBox(_T("Error: can not open camera!"));
 					return;
 				}
 			}
 			else
 			{
-				m_pCapture = cvCaptureFromAVI("megamind.avi");
-				if(!m_pCapture)
+				USES_CONVERSION;
+				m_VideoCap.open(W2A(m_cstrVideoPath));
+				if (!m_VideoCap.isOpened())
 				{
-					MessageBox(_T("can not open target video file!"));
+					MessageBox(_T("Error: can not open video file!"));
 					return;
 				}
 			}
 		}
-		if(m_nTimer == 0)
-			m_nTimer = SetTimer(600, 20, NULL);
+		// ok, it's time to play...
+		if (m_nTimer == 0)
+			m_nTimer = SetTimer(600, 16, NULL);
 		//enable capture:
 		GetDlgItem(IDC_BUTTON_CAPTURE)->EnableWindow(TRUE);
 		//change text:
 		SetDlgItemText(IDC_BUTTON_PLAY, _T("STOP"));
 	}
-	else if(!cstr.Compare(_T("STOP")))
+	else if (!cstr.Compare(_T("STOP")))
 	{
-		if(m_nTimer)
+		if (m_nTimer)
 		{
 			KillTimer(m_nTimer);
 			m_nTimer = 0;
@@ -319,11 +359,11 @@ void CCameraDemoDlg::OnBnClickedButtonPlay()
 void CCameraDemoDlg::OnClose()
 {
 	// TODO: 在此添加消息处理程序代码和/或调用默认值
-	if(m_pCapture)
+	if (m_VideoCap.isOpened())
 	{
-		cvReleaseCapture(&m_pCapture); 
+		m_VideoCap.release();
 	}
-	if(m_pVideoWriter)
+	if (m_pVideoWriter)
 	{
 		cvReleaseVideoWriter(&m_pVideoWriter);
 	}
@@ -334,22 +374,25 @@ void CCameraDemoDlg::OnClose()
 void CCameraDemoDlg::OnBnClickedRadioCamera()
 {
 	// TODO: 在此添加控件通知处理程序代码
-	if(m_bCamera)
+	if (m_bCamera)
 		return;
 
-	if(m_nTimer)
+	if (m_nTimer)
 	{
 		MessageBox(_T("Please stop video first!"));
 		((CButton*)GetDlgItem(IDC_RADIO_CAMERA))->SetCheck(BST_UNCHECKED);
 		((CButton*)GetDlgItem(IDC_RADIO_FILE))->SetCheck(BST_CHECKED);
 		return;
 	}
-	if(m_pCapture)
-		cvReleaseCapture(&m_pCapture);
-	m_pCapture = cvCaptureFromCAM(0);
-	if(!m_pCapture)
+	if (m_VideoCap.isOpened())
 	{
-		MessageBox(_T("can not open camera!"));
+		m_VideoCap.release();
+	}
+	// open camera:
+	m_VideoCap.open(0);
+	if (!m_VideoCap.isOpened())
+	{
+		MessageBox(_T("Error: can not open camera!"));
 		((CButton*)GetDlgItem(IDC_RADIO_CAMERA))->SetCheck(BST_UNCHECKED);
 		((CButton*)GetDlgItem(IDC_RADIO_FILE))->SetCheck(BST_CHECKED);
 		GetDlgItem(IDC_CHECK_SAVE)->EnableWindow(FALSE);
@@ -365,32 +408,32 @@ void CCameraDemoDlg::OnBnClickedRadioCamera()
 void CCameraDemoDlg::OnBnClickedRadioFile()
 {
 	// TODO: 在此添加控件通知处理程序代码
-	if(m_nTimer)
+	if (m_nTimer)
 	{
 		MessageBox(_T("Please stop video first!"));
 		((CButton*)GetDlgItem(IDC_RADIO_CAMERA))->SetCheck(BST_CHECKED);
 		((CButton*)GetDlgItem(IDC_RADIO_FILE))->SetCheck(BST_UNCHECKED);
 		return;
 	}
-	if(m_pCapture)
-		cvReleaseCapture(&m_pCapture);
+	if (m_VideoCap.isOpened())
+	{
+		m_VideoCap.release();
+	}
 	// select file:
 	LPCTSTR lpszDefExt, lpszFilter;
-	TCHAR CurDir[100];
-	::GetCurrentDirectory(100,CurDir);
 	lpszDefExt = _T(".avi");
 	lpszFilter = _T("Video File (*.avi)|*.avi||");
-	CFileDialog importDlg(TRUE , lpszDefExt,NULL, OFN_HIDEREADONLY, lpszFilter, NULL);
+	CFileDialog importDlg(TRUE, lpszDefExt, NULL, OFN_HIDEREADONLY, lpszFilter, NULL);
 	int response = importDlg.DoModal();
-	if(response == IDOK)
+	if (response == IDOK)
 	{
 		m_cstrVideoPath = importDlg.GetPathName();
 		GetDlgItem(IDC_EDIT_VIDEO_PATH)->SetWindowText(m_cstrVideoPath);
 		USES_CONVERSION;
-		m_pCapture = cvCaptureFromAVI(W2A(m_cstrVideoPath));
-		if(!m_pCapture)
+		m_VideoCap.open(W2A(m_cstrVideoPath));
+		if (!m_VideoCap.isOpened())
 		{
-			MessageBox(_T("can not open target video file!"));
+			MessageBox(_T("Error: can not open video file!"));
 			goto _ERR;
 		}
 		else
@@ -400,7 +443,6 @@ void CCameraDemoDlg::OnBnClickedRadioFile()
 			((CButton*)GetDlgItem(IDC_CHECK_SAVE))->SetCheck(BST_UNCHECKED);
 		}
 		m_bCamera = FALSE;
-		::SetCurrentDirectory(CurDir); // restore to previous directory...
 		return;
 	}
 _ERR:
@@ -408,36 +450,36 @@ _ERR:
 	GetDlgItem(IDC_CHECK_SAVE)->EnableWindow(TRUE);
 	((CButton*)GetDlgItem(IDC_RADIO_CAMERA))->SetCheck(BST_CHECKED);
 	((CButton*)GetDlgItem(IDC_RADIO_FILE))->SetCheck(BST_UNCHECKED);
-	::SetCurrentDirectory(CurDir); // restore to previous directory...
 }
 
 
 void CCameraDemoDlg::OnBnClickedButtonCapture()
 {
 	// TODO: 在此添加控件通知处理程序代码
-	if(!m_nTimer || !m_pCapture)
+	if (!m_nTimer || !m_VideoCap.isOpened())
 	{
 		return;
 	}
 
 #if (DETECT_ENABLE == 1)
-	
-	IplImage frame_t;
-	for(int i=0; i<ImageFaceNumber; ++i)
+	IplImage IplFrame;
+	for (int i = 0; i < m_ImageFaceNumber; ++i)
 	{
-		frame_t = ImageFace[i];
-		m_Frames[m_nFrameIndex].m_CvvImage.CopyOf(&frame_t, 1);
+		IplFrame = m_ImageFace[i];
+		m_Frames[m_nFrameIndex].m_CvvImage.CopyOf(&IplFrame, 1);
 		m_Frames[m_nFrameIndex].m_CvvImage.DrawToHDC(m_Frames[m_nFrameIndex].m_hVideoDC, &m_Frames[m_nFrameIndex].m_VideoRect);
 		m_nFrameIndex++;
-		if(m_nFrameIndex == FRAME_MAX)
+		if (m_nFrameIndex == FRAME_MAX)
 			m_nFrameIndex = 0;
 	}
 #else
-	IplImage *frame = cvQueryFrame(m_pCapture);
-	m_Frames[m_nFrameIndex].m_CvvImage.CopyOf(frame, 1);
+	Mat MatFrame;
+	m_VideoCap >> MatFrame;
+	IplImage IplFrame = MatFrame;
+	m_Frames[m_nFrameIndex].m_CvvImage.CopyOf(&IplFrame, 1);
 	m_Frames[m_nFrameIndex].m_CvvImage.DrawToHDC(m_Frames[m_nFrameIndex].m_hVideoDC, &m_Frames[m_nFrameIndex].m_VideoRect);
 	m_nFrameIndex++;
-	if(m_nFrameIndex == FRAME_MAX)
+	if (m_nFrameIndex == FRAME_MAX)
 		m_nFrameIndex = 0;
 #endif
 }
@@ -446,41 +488,39 @@ void CCameraDemoDlg::OnBnClickedButtonCapture()
 void CCameraDemoDlg::OnBnClickedCheckSave()
 {
 	// TODO: 在此添加控件通知处理程序代码
-	if(m_nTimer)
+	if (m_nTimer)
 	{
 		MessageBox(_T("Please stop video first!"));
 		((CButton*)GetDlgItem(IDC_CHECK_SAVE))->SetCheck(m_bSaveVideo ? BST_CHECKED : BST_UNCHECKED);
 		return;
 	}
-	if(!m_pCapture)
+	if (!m_VideoCap.isOpened())
 	{
-		MessageBox(_T("video capture not created yet!"));
+		MessageBox(_T("Warning: video capture not opened yet!"));
 		((CButton*)GetDlgItem(IDC_CHECK_SAVE))->SetCheck(m_bSaveVideo ? BST_CHECKED : BST_UNCHECKED);
 		return;
-	}	
+	}
 	m_bSaveVideo = ((CButton*)GetDlgItem(IDC_CHECK_SAVE))->GetCheck() ? TRUE : FALSE;
-	if(!m_bSaveVideo)
+	if (!m_bSaveVideo)
 		return;
 
 	// select file:
 	LPCTSTR lpszDefExt, lpszFilter;
-	TCHAR CurDir[100];
-	::GetCurrentDirectory(100,CurDir);
 	lpszDefExt = _T(".avi");
 	lpszFilter = _T("Video File (*.avi)|*.avi||");
-	CFileDialog importDlg(FALSE , lpszDefExt,NULL, OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT, lpszFilter, NULL);
+	CFileDialog importDlg(FALSE, lpszDefExt, NULL, OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT, lpszFilter, NULL);
 	int response = importDlg.DoModal();
-	if(response == IDOK)
+	if (response == IDOK)
 	{
 		m_cstrSavePath = importDlg.GetPathName();
 		GetDlgItem(IDC_EDIT_SAVE_PATH)->SetWindowText(m_cstrSavePath);
 		// create writer:
-		IplImage *m_Frame;
-		m_Frame = cvQueryFrame(m_pCapture); 
-		if(m_pVideoWriter)
+		Mat MatFrame;
+		m_VideoCap >> MatFrame;
+		IplImage IplFrame = MatFrame;
+		if (m_pVideoWriter)
 			cvReleaseVideoWriter(&m_pVideoWriter);
 		USES_CONVERSION;
-		m_pVideoWriter = cvCreateVideoWriter(W2A(m_cstrSavePath), CV_FOURCC('x', 'v', 'I', 'D'), 25, cvSize(m_Frame->width, m_Frame->height));
+		m_pVideoWriter = cvCreateVideoWriter(W2A(m_cstrSavePath), CV_FOURCC('x', 'v', 'I', 'D'), 25, cvSize(IplFrame.width, IplFrame.height));
 	}
-	::SetCurrentDirectory(CurDir); // restore to previous directory...
 }

@@ -216,16 +216,19 @@ void CCameraDemoDlg::Init()
 	// load cascade:
 	m_ImageFaceNumber = 0;
 	USES_CONVERSION;
+	CString cstr;
 	m_FaceFrontalCascade.load(W2A(FRONTAL_FACE_XML_FILE));
 	if (m_FaceFrontalCascade.empty())
 	{
-		MessageBox(_T("Error: can not load \"%s\""), (FRONTAL_FACE_XML_FILE));
+		cstr.Format(_T("Error: can not load \"%s\""), (FRONTAL_FACE_XML_FILE));
+		MessageBox(cstr);
 		return;
 	}
 	m_FaceProfileCascade.load(W2A(PROFILE_FACE_XML_FILE));
 	if (m_FaceProfileCascade.empty())
 	{
-		MessageBox(_T("Error: can not load \"%s\""), PROFILE_FACE_XML_FILE);
+		cstr.Format(_T("Error: can not load \"%s\""), PROFILE_FACE_XML_FILE);
+		MessageBox(cstr);
 		return;
 	}
 }

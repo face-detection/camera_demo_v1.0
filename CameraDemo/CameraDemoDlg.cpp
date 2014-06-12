@@ -65,6 +65,9 @@ END_MESSAGE_MAP()
 
 CCameraDemoDlg::CCameraDemoDlg(CWnd* pParent /*=NULL*/)
 : CDialogEx(CCameraDemoDlg::IDD, pParent)
+, m_FeatureDetector(400, 0.01, 1.0, 3, true, 0.04)
+, m_RNG(12345)
+, m_bNeedInit(FALSE)
 {
 	m_hIcon = AfxGetApp()->LoadIcon(IDR_MAINFRAME);
 }
@@ -120,7 +123,7 @@ BOOL CCameraDemoDlg::OnInitDialog()
 	SetIcon(m_hIcon, FALSE);		// 设置小图标
 
 	// TODO: 在此添加额外的初始化代码
-	SetWindowText(_T("CameraDemo - v1.2.1"));
+	SetWindowText(_T("CameraDemo - v2.0"));
 	Init();
 	return TRUE;  // 除非将焦点设置到控件，否则返回 TRUE
 }
@@ -231,6 +234,123 @@ void CCameraDemoDlg::Init()
 		MessageBox(cstr);
 		return;
 	}
+
+	// feature detector:
+	m_MaskROIs.clear();
+	size_t screen_width = (size_t)m_VideoCap.get(CV_CAP_PROP_FRAME_WIDTH);
+	size_t screen_height = (size_t)m_VideoCap.get(CV_CAP_PROP_FRAME_HEIGHT);
+	m_ScreenCorners.clear();
+	m_ScreenCorners.push_back(cvPoint(0, 0));
+	m_ScreenCorners.push_back(cvPoint(screen_width, 0));
+	m_ScreenCorners.push_back(cvPoint(screen_width, screen_height));
+	m_ScreenCorners.push_back(cvPoint(0, screen_height));
+}
+
+void CCameraDemoDlg::_render_frame(Mat& MatFrame, HDC& m_hVideoDC, CRect& m_VideoRect)
+{
+	IplImage IplFrame = MatFrame;
+	CvvImage CvvFrame;
+	CvvFrame.CopyOf(&IplFrame, 1);
+	CvvFrame.DrawToHDC(m_hVideoDC, &m_VideoRect);
+}
+
+void CCameraDemoDlg::_save_frame(CvVideoWriter* m_pVideoWriter, Mat& MatFrame)
+{
+	IplImage IplFrame = MatFrame;
+	cvWriteFrame(m_pVideoWriter, &IplFrame);
+}
+
+BOOL CCameraDemoDlg::_faces_overlap(Rect& rect, vector<Rect>& target)
+{
+
+	for (size_t i = 0; i < target.size(); ++i)
+	{
+		if (rect.x > target[i].x + target[i].width)
+			continue;
+		if (rect.y > target[i].y + target[i].height)
+			continue;
+		if (rect.x + rect.width < target[i].x)
+			continue;
+		if (rect.y + rect.height < target[i].y)
+			continue;
+		return TRUE;
+	}
+	return FALSE;
+}
+
+BOOL CCameraDemoDlg::_find_mask_roi(Mat& GrayFrame, vector<Rect>& Faces)
+{
+	//detect face:
+	Mat roi_t;
+	Point center;
+	Mat EqualizedFrame;
+	equalizeHist(GrayFrame, EqualizedFrame);
+	if (EqualizedFrame.empty())
+		return FALSE;
+	m_MaskROIs.clear();
+	Faces.clear();
+	// Front face:
+	m_FaceFrontalCascade.detectMultiScale(EqualizedFrame, Faces, SCALE_FACTOR, MIN_NEIGHBOR, 0 | CV_HAAR_SCALE_IMAGE, Size(MIN_FACE_WIDTH, MIN_FACE_HEIGHT), Size(MAX_FACE_WIDTH, MAX_FACE_HEIGHT)); // using default parameters...
+	if (Faces.size())
+	{
+		// create mask frame:
+		size_t faces = Faces.size();
+		if (faces > MAX_FACES)
+			faces = MAX_FACES;
+		for (size_t i = 0; i < faces; ++i)
+		{
+			// calculate the center: 	
+			roi_t = Mat::zeros(GrayFrame.size(), CV_8U);
+			center = Point(Faces[i].x + Faces[i].width / 2, Faces[i].y + Faces[i].height / 2);
+			ellipse(roi_t, center, Size(Faces[i].width / 3, Faces[i].height / 3), 0, 0, 360, Scalar(255, 0, 255), -1, 8, 0);
+			m_MaskROIs.push_back(roi_t);
+		}
+	}
+
+	// check if reach max:
+	if (m_MaskROIs.size() >= MAX_FACES)
+		return TRUE;
+
+	///*
+	// profile face:
+	vector<Rect> Faces_t;
+	m_FaceProfileCascade.detectMultiScale(EqualizedFrame, Faces_t, SCALE_FACTOR, MIN_NEIGHBOR, 0 | CV_HAAR_SCALE_IMAGE, Size(MIN_FACE_WIDTH, MIN_FACE_HEIGHT), Size(MAX_FACE_WIDTH, MAX_FACE_HEIGHT)); // using default parameters...
+	if (Faces_t.size())
+	{
+		// create mask frame:
+		size_t faces = Faces_t.size();
+		for (size_t i = 0; i < faces; ++i)
+		{
+			if (Faces.size() >= MAX_FACES)
+			break;
+
+			// check if overlap:
+			if (_faces_overlap(Faces_t[i], Faces))
+			continue;
+
+			// calculate the center:
+			roi_t = Mat::zeros(GrayFrame.size(), CV_8U);
+			center = Point(Faces_t[i].x + Faces_t[i].width / 2, Faces_t[i].y + Faces_t[i].height / 2);
+			ellipse(roi_t, center, Size(Faces_t[i].width / 3, Faces_t[i].height / 3), 0, 0, 360, Scalar(255, 0, 255), -1, 8, 0);
+			m_MaskROIs.push_back(roi_t);
+			// store faces vectors:
+			Faces.push_back(Faces_t[i]);
+		}
+	}
+	//*/
+	// if find ROIs:
+	if (m_MaskROIs.size())
+		return TRUE;
+	else
+		return FALSE;
+}
+
+void CCameraDemoDlg::_set_radio_sel(UINT sel)
+{
+	for (UINT i = 0; i < 3; ++i)
+	{
+		((CButton*)GetDlgItem(IDC_RADIO_F0 + i))->SetCheck((i == sel) ? BST_CHECKED : BST_UNCHECKED);
+	}
 }
 
 void CCameraDemoDlg::OnTimer(UINT_PTR nIDEvent)
@@ -238,7 +358,7 @@ void CCameraDemoDlg::OnTimer(UINT_PTR nIDEvent)
 	// TODO: 在此添加消息处理程序代码和/或调用默认值
 	if (m_nTimer == nIDEvent && m_VideoCap.isOpened())
 	{
-		Mat MatFrame;
+		Mat MatFrame, GrayFrame;
 		m_VideoCap >> MatFrame; // read frame
 		if (MatFrame.empty())
 		{
@@ -252,55 +372,148 @@ void CCameraDemoDlg::OnTimer(UINT_PTR nIDEvent)
 		}
 		else
 		{
-#if (DETECT_ENABLE == 1)			
-			//detect face:
-			Mat GrayFrame, EqualizedFrame;
-			vector<Rect> Faces;
+#if (DETECT_ENABLE == 1)
+			// conver to gray frame:
 			cvtColor(MatFrame, GrayFrame, cv::COLOR_RGB2GRAY);
-			equalizeHist(GrayFrame, EqualizedFrame);
-			if (EqualizedFrame.empty())
-				return;
-			// Front face:
-			Faces.clear();
-			m_FaceFrontalCascade.detectMultiScale(EqualizedFrame, Faces, SCALE_FACTOR, MIN_NEIGHBOR, 0 | CV_HAAR_SCALE_IMAGE, Size(MIN_FACE_WIDTH, MIN_FACE_HEIGHT), Size(MAX_FACE_WIDTH, MAX_FACE_HEIGHT)); // using default parameters...
-			if (Faces.size())
+
+			if (m_bNeedInit)
 			{
-				for (size_t i = 0; i < Faces.size(); i++)
+				// we find face ROIs first:
+				vector<Rect> Faces;
+				if (_find_mask_roi(GrayFrame, Faces))
 				{
-					if (i < FRAME_MAX)
-						m_ImageFace[i] = MatFrame(Rect(Faces[i].x, Faces[i].y, Faces[i].width, Faces[i].height));
-					rectangle(MatFrame, Faces[i], Scalar(0, 255, 0), 2);
+					vector<KeyPoint> keypoints;
+					// detect keypoints:
+					for (size_t i = 0; i < m_MaskROIs.size(); ++i)
+					{
+						// detect keypoints within face ROI:
+						m_FeatureDetector.detect(MatFrame, keypoints, m_MaskROIs[i]);
+						// conver keypoints:
+						KeyPoint::convert(keypoints, m_CurKeyPoints[i]);
+						//draw init rectangle:
+						rectangle(MatFrame, Faces[i], Scalar(0, 255, 0), 2, 8);
+						//auto show captured faces:
+						m_ImageFace[m_nFrameIndex] = MatFrame(Rect(Faces[i].x, Faces[i].y, Faces[i].width, Faces[i].height));
+						_render_frame(m_ImageFace[m_nFrameIndex], m_Frames[m_nFrameIndex].m_hVideoDC, m_Frames[m_nFrameIndex].m_VideoRect);
+						_set_radio_sel(m_nFrameIndex);
+						m_nFrameIndex++;
+						if (m_nFrameIndex == FRAME_MAX)
+							m_nFrameIndex = 0;
+						//record corners:
+						m_OldFaceCorners[i].clear(); // important!!!
+						m_OldFaceCorners[i].push_back(cvPoint(Faces[i].x, Faces[i].y));
+						m_OldFaceCorners[i].push_back(cvPoint(Faces[i].x + Faces[i].width, Faces[i].y));
+						m_OldFaceCorners[i].push_back(cvPoint(Faces[i].x + Faces[i].width, Faces[i].y + Faces[i].height));
+						m_OldFaceCorners[i].push_back(cvPoint(Faces[i].x, Faces[i].y + Faces[i].height));
+					}
+					// only tracking...
+					m_bNeedInit = FALSE;
 				}
-				m_ImageFaceNumber = Faces.size();
-				if (m_ImageFaceNumber > FRAME_MAX)
-					m_ImageFaceNumber = FRAME_MAX;
 			}
-			// profile face:
-			Faces.clear();
-			m_FaceProfileCascade.detectMultiScale(EqualizedFrame, Faces, SCALE_FACTOR, MIN_NEIGHBOR, 0 | CV_HAAR_SCALE_IMAGE, Size(MIN_FACE_WIDTH, MIN_FACE_HEIGHT), Size(MAX_FACE_WIDTH, MAX_FACE_HEIGHT)); // using default parameters...
-			if (Faces.size())
+			else // if init complete, keeping tracking...
 			{
-				for (size_t i = 0; i < Faces.size(); i++)
+				for (size_t face_index = 0; face_index < m_MaskROIs.size(); ++face_index)
 				{
-					if (i < FRAME_MAX)
-						m_ImageFace[i] = MatFrame(Rect(Faces[i].x, Faces[i].y, Faces[i].width, Faces[i].height));
-					rectangle(MatFrame, Faces[i], Scalar(255, 0, 0), 2);
+					if (m_OldKeyPoints[face_index].empty())
+						continue;
+
+					// track keypoints:
+					vector<uchar> status;
+					vector<float> err;
+					if (m_PrevGrayFrame.empty())
+						GrayFrame.copyTo(m_PrevGrayFrame);
+					m_CurKeyPoints[face_index].clear();
+					cv::calcOpticalFlowPyrLK(m_PrevGrayFrame, GrayFrame, m_OldKeyPoints[face_index], m_CurKeyPoints[face_index], status, err, Size(21, 21), 2);
+					size_t i, k;
+					for (i = k = 0; i < m_CurKeyPoints[face_index].size(); i++)
+					{
+						// remove invalid points:
+						if (!status[i])
+							continue;
+
+						// remove out of range points:
+						if (cv::pointPolygonTest(m_OldFaceCorners[face_index], m_CurKeyPoints[face_index][i], false) < 0)
+							continue;
+
+						m_CurKeyPoints[face_index][k] = m_CurKeyPoints[face_index][i];
+						m_OldKeyPoints[face_index][k] = m_OldKeyPoints[face_index][i];
+						k++;
+						circle(MatFrame, m_CurKeyPoints[face_index][i], 3,
+							Scalar(m_RNG.uniform(0, 255), m_RNG.uniform(0, 255), m_RNG.uniform(0, 255)), 1, 8);
+					}
+					m_CurKeyPoints[face_index].resize(k);
+					m_OldKeyPoints[face_index].resize(k);
+
+					// affine transform:
+					size_t size = k;
+					vector<Point2f> cur_corners(4);
+					if (size >= MIN_KEY_POINTS)
+					{
+						vector<Point2f> old_points_t;
+						vector<Point2f> cur_points_t;
+
+						for (size_t i = 0; i < 3; ++i)
+						{
+							old_points_t.push_back(m_OldKeyPoints[face_index][i]);
+							cur_points_t.push_back(m_CurKeyPoints[face_index][i]);
+						}
+						// calculate tranform metrix:
+						Mat H = cv::getAffineTransform(old_points_t, cur_points_t);
+						cv::transform(m_OldFaceCorners[face_index], cur_corners, H);
+
+						// judge if in screen:
+						int number_gate = 0;
+						for (size_t i = 0; i < 4; ++i)
+						{
+							if (cv::pointPolygonTest(m_ScreenCorners, cur_corners[i], false) < 0)
+								number_gate++;
+						}
+						if (number_gate >= 2) // when more than 2 corners out of screen, re-init:
+						{
+							m_OldKeyPoints[face_index].clear();
+							m_CurKeyPoints[face_index].clear();
+							m_bNeedInit = TRUE;
+						}
+						else
+						{
+							//-- Draw lines between the corners (the mapped object in the scene - image_2 )
+							cv::line(MatFrame, cur_corners[0], cur_corners[1], Scalar(0, 255, 0), 2);
+							cv::line(MatFrame, cur_corners[1], cur_corners[2], Scalar(0, 255, 0), 2);
+							cv::line(MatFrame, cur_corners[2], cur_corners[3], Scalar(0, 255, 0), 2);
+							cv::line(MatFrame, cur_corners[3], cur_corners[0], Scalar(0, 255, 0), 2);
+
+							// update previous cornners:
+							m_OldFaceCorners[face_index][0] = cur_corners[0];
+							m_OldFaceCorners[face_index][1] = cur_corners[1];
+							m_OldFaceCorners[face_index][2] = cur_corners[2];
+							m_OldFaceCorners[face_index][3] = cur_corners[3];
+						}
+					}
 				}
-				m_ImageFaceNumber = Faces.size();
-				if (m_ImageFaceNumber > FRAME_MAX)
-					m_ImageFaceNumber = FRAME_MAX;
 			}
-#endif
-			//draw:
-			IplImage IplFrame = MatFrame;
-			CvvImage CvvFrame;
-			CvvFrame.CopyOf(&IplFrame, 1);
-			CvvFrame.DrawToHDC(m_hVideoDC, &m_VideoRect);
+
+			// update previous frame:
+			cv::swap(m_PrevGrayFrame, GrayFrame);
+			if (m_MaskROIs.size() == 0)
+			{
+				m_bNeedInit = true;
+			}
+			for (size_t face_index = 0; face_index < m_MaskROIs.size(); ++face_index)
+			{
+				std::swap(m_CurKeyPoints[face_index], m_OldKeyPoints[face_index]);
+				if (m_OldKeyPoints[face_index].size() < MIN_KEY_POINTS)
+				{
+					m_bNeedInit = true;
+				}
+			}
+#endif // #if (DETECT_ENABLE == 1)
+			// show frame:
+			_render_frame(MatFrame, m_hVideoDC, m_VideoRect);
+
 			//check if to be saved:
 			if (m_bSaveVideo)
-			{
-				cvWriteFrame(m_pVideoWriter, &IplFrame);
-			}
+				_save_frame(m_pVideoWriter, MatFrame);
+
 		}
 	}
 	CDialogEx::OnTimer(nIDEvent);
@@ -341,7 +554,7 @@ void CCameraDemoDlg::OnBnClickedButtonPlay()
 		if (m_nTimer == 0)
 			m_nTimer = SetTimer(600, 16, NULL);
 		//enable capture:
-		GetDlgItem(IDC_BUTTON_CAPTURE)->EnableWindow(TRUE);
+		//GetDlgItem(IDC_BUTTON_CAPTURE)->EnableWindow(TRUE);
 		//change text:
 		SetDlgItemText(IDC_BUTTON_PLAY, _T("STOP"));
 	}
@@ -352,7 +565,7 @@ void CCameraDemoDlg::OnBnClickedButtonPlay()
 			KillTimer(m_nTimer);
 			m_nTimer = 0;
 		}
-		GetDlgItem(IDC_BUTTON_CAPTURE)->EnableWindow(FALSE);
+		//GetDlgItem(IDC_BUTTON_CAPTURE)->EnableWindow(FALSE);
 		//change text:
 		SetDlgItemText(IDC_BUTTON_PLAY, _T("START"));
 	}
@@ -527,3 +740,4 @@ void CCameraDemoDlg::OnBnClickedCheckSave()
 		m_pVideoWriter = cvCreateVideoWriter(W2A(m_cstrSavePath), CV_FOURCC('x', 'v', 'I', 'D'), 25, cvSize(IplFrame.width, IplFrame.height));
 	}
 }
+

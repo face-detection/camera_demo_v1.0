@@ -20,6 +20,8 @@ public:
 
 	// 对话框数据
 	enum { IDD = IDD_CAMERADEMO_DIALOG };
+	enum { MAX_FACES = 3 };	// detect and track max 3 faces...
+	enum { MIN_KEY_POINTS = 10 }; // when keypoints < MIN_KEY_POINTS, so re-init...
 
 protected:
 	virtual void DoDataExchange(CDataExchange* pDX);	// DDX/DDV 支持
@@ -47,6 +49,21 @@ protected:
 	int m_ImageFaceNumber;
 	// initial routines:
 	void Init();
+	// feature detector:
+	GoodFeaturesToTrackDetector m_FeatureDetector; // using GRIF Detector
+	vector<Mat> m_MaskROIs;
+	Mat m_PrevGrayFrame;
+	BOOL m_bNeedInit;
+	RNG m_RNG;
+	vector<Point2f> m_OldKeyPoints[MAX_FACES];
+	vector<Point2f> m_CurKeyPoints[MAX_FACES];
+	vector<Point2f> m_OldFaceCorners[MAX_FACES];
+	vector<Point2f> m_ScreenCorners;
+	BOOL _faces_overlap(Rect& rect, vector<Rect>& target);
+	BOOL _find_mask_roi(Mat& GrayFrame, vector<Rect>& Faces);
+	void _render_frame(Mat& MatFrame, HDC& m_hVideoDC, CRect& m_VideoRect);
+	void _save_frame(CvVideoWriter* m_pVideoWriter, Mat& MatFrame);
+	void _set_radio_sel(UINT sel);
 
 	// 生成的消息映射函数
 	virtual BOOL OnInitDialog();

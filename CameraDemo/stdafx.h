@@ -53,7 +53,11 @@ using cv::CascadeClassifier;
 using cv::Rect;
 using cv::Size;
 using cv::Scalar;
-
+using cv::Point;
+using cv::GoodFeaturesToTrackDetector;
+using cv::RNG;
+using cv::Point2f;
+using cv::KeyPoint;
 
 
 //#ifdef _UNICODE

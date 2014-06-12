@@ -498,15 +498,23 @@ void CCameraDemoDlg::OnTimer(UINT_PTR nIDEvent)
 			{
 				m_bNeedInit = true;
 			}
-			for (size_t face_index = 0; face_index < m_MaskROIs.size(); ++face_index)
+			if (!m_bNeedInit)
 			{
-				std::swap(m_CurKeyPoints[face_index], m_OldKeyPoints[face_index]);
-				if (m_OldKeyPoints[face_index].size() < MIN_KEY_POINTS)
+				for (size_t face_index = 0; face_index < m_MaskROIs.size(); ++face_index)
 				{
-					m_bNeedInit = true;
+					if (m_CurKeyPoints[face_index].size() < MIN_KEY_POINTS)
+					{
+						m_bNeedInit = true;
+						m_OldKeyPoints[face_index].clear();
+					}
+					else
+					{
+						std::swap(m_CurKeyPoints[face_index], m_OldKeyPoints[face_index]);
+					}
 				}
 			}
 #endif // #if (DETECT_ENABLE == 1)
+
 			// show frame:
 			_render_frame(MatFrame, m_hVideoDC, m_VideoRect);
 

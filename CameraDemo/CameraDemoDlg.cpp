@@ -321,9 +321,6 @@ BOOL CCameraDemoDlg::_find_mask_roi(Mat& GrayFrame, vector<Rect>& Faces)
 		size_t faces = Faces_t.size();
 		for (size_t i = 0; i < faces; ++i)
 		{
-			if (Faces.size() >= MAX_FACES)
-			break;
-
 			// check if overlap:
 			if (_faces_overlap(Faces_t[i], Faces))
 			continue;
@@ -335,6 +332,8 @@ BOOL CCameraDemoDlg::_find_mask_roi(Mat& GrayFrame, vector<Rect>& Faces)
 			m_MaskROIs.push_back(roi_t);
 			// store faces vectors:
 			Faces.push_back(Faces_t[i]);
+			if (Faces.size() >= MAX_FACES)
+				break;
 		}
 	}
 	//*/
